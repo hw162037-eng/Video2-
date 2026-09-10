@@ -1,0 +1,65 @@
+import { MaterialIcons } from "@expo/vector-icons";
+import { useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+
+import { ScreenContainer } from "@/components/screen-container";
+import { useAppStore } from "@/lib/app-store";
+import { shortKey, type ApiProfile } from "@/lib/types";
+
+const blue = "#45A8FF";
+
+function Field({ label, value, onChangeText, suffix }: { label: string; value: string; onChangeText: (value: string) => void; suffix?: string }) {
+  return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><View style={styles.inputRow}><TextInput value={value} onChangeText={onChangeText} keyboardType="number-pad" style={styles.input} /><Text style={styles.suffix}>{suffix}</Text></View></View>;
+}
+
+function SectionHeader({ icon, title, subtitle }: { icon: keyof typeof MaterialIcons.glyphMap; title: string; subtitle: string }) {
+  return <View style={styles.sectionHeader}><View style={styles.sectionIcon}><MaterialIcons name={icon} size={18} color={blue} /></View><View><Text style={styles.sectionTitle}>{title}</Text><Text style={styles.sectionSubtitle}>{subtitle}</Text></View></View>;
+}
+
+export default function SettingsScreen() {
+  const { profiles, sharedImgbbKey, settings, saveProfile, removeProfile, setSharedImgbbKey, setSettings } = useAppStore();
+  const [editing, setEditing] = useState<ApiProfile | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [agnesKey, setAgnesKey] = useState("");
+  const enabledCount = profiles.filter((profile) => profile.enabled).length;
+
+  const openProfile = (profile?: ApiProfile) => {
+    setEditing(profile ?? null);
+    setEditorOpen(true);
+    setProfileName(profile?.name ?? "");
+    setAgnesKey(profile?.agnesKey ?? "");
+  };
+  const save = () => {
+    if (!profileName.trim() || !agnesKey.trim()) {
+      Alert.alert("Заполните профиль", "Нужны имя профиля и Agnes AI API key.");
+      return;
+    }
+    saveProfile({ id: editing?.id ?? `profile-${Date.now()}`, name: profileName.trim(), agnesKey: agnesKey.trim(), enabled: editing?.enabled ?? true });
+    setEditing(null); setEditorOpen(false); setProfileName(""); setAgnesKey("");
+  };
+  const confirmDelete = (profile: ApiProfile) => Alert.alert("Удалить профиль?", `Профиль «${profile.name}» и его ключ будут удалены локально.`, [{ text: "Отмена", style: "cancel" }, { text: "Удалить", style: "destructive", onPress: () => removeProfile(profile.id) }]);
+
+  return <ScreenContainer className="p-4" edges={["top", "left", "right"]}>
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+      <Text style={styles.eyebrow}>КОНФИГУРАЦИЯ</Text><Text style={styles.title}>Настройки</Text><Text style={styles.subtitle}>Профили и ограничения сохраняются только на этом устройстве.</Text>
+      <View style={styles.infoBanner}><MaterialIcons name="shield" size={20} color="#4FE3A1" /><Text style={styles.infoText}>Ключи Agnes AI хранятся через SecureStore на Android. В браузерном прототипе используется локальный fallback.</Text></View>
+
+      <View style={styles.card}><SectionHeader icon="vpn-key" title="Профили API" subtitle={`${enabledCount} включено · один профиль = одна параллельная фото- и видеозадача`} />
+        {profiles.map((profile) => <View key={profile.id} style={styles.profileRow}><View style={[styles.profileAvatar, { backgroundColor: profile.enabled ? "#153A59" : "#1A2833" }]}><Text style={[styles.avatarText, { color: profile.enabled ? blue : "#71879A" }]}>{profile.name.slice(0, 1).toUpperCase()}</Text></View><View style={styles.profileInfo}><Text style={styles.profileName}>{profile.name}</Text><Text style={styles.profileKey}>{shortKey(profile.agnesKey)} · {profile.enabled ? "активен" : "выключен"}</Text></View><Switch value={profile.enabled} onValueChange={(enabled) => saveProfile({ ...profile, enabled })} trackColor={{ false: "#314554", true: "#24557C" }} thumbColor={profile.enabled ? blue : "#8EA0AF"} /><Pressable onPress={() => openProfile(profile)} style={styles.smallIcon}><MaterialIcons name="edit" size={17} color="#A9D9FF" /></Pressable><Pressable onPress={() => confirmDelete(profile)} style={styles.smallIcon}><MaterialIcons name="delete-outline" size={18} color="#FF8D94" /></Pressable></View>)}
+        {editorOpen ? <View style={styles.editor}><Text style={styles.editorTitle}>{editing ? "Редактировать профиль" : "Новый профиль"}</Text><TextInput value={profileName} onChangeText={setProfileName} placeholder="Название профиля" placeholderTextColor="#688096" autoCapitalize="sentences" style={styles.textInput} /><TextInput value={agnesKey} onChangeText={setAgnesKey} placeholder="Agnes AI API key" placeholderTextColor="#688096" autoCapitalize="none" autoCorrect={false} keyboardType="default" secureTextEntry={false} style={styles.textInput} /><Text style={styles.pasteHint}>Ввод открыт специально для вставки ключа из буфера обмена.</Text><View style={styles.editorActions}><Pressable onPress={() => { setEditorOpen(false); setEditing(null); }} style={styles.cancelButton}><Text style={styles.cancelText}>Отмена</Text></Pressable><Pressable onPress={save} style={styles.saveButton}><Text style={styles.saveText}>Сохранить профиль</Text></Pressable></View></View> : <Pressable onPress={() => openProfile()} style={styles.addProfile}><MaterialIcons name="add" size={18} color={blue} /><Text style={styles.addProfileText}>Добавить профиль</Text></Pressable>}
+      </View>
+
+      <View style={styles.card}><SectionHeader icon="cloud-upload" title="Общий ImgBB" subtitle="Один ключ для всех профилей и V2.0 payload" /><TextInput value={sharedImgbbKey} onChangeText={setSharedImgbbKey} placeholder="ImgBB API key" placeholderTextColor="#688096" autoCapitalize="none" autoCorrect={false} keyboardType="default" secureTextEntry={false} style={styles.textInput} /><Text style={styles.pasteHint}>Ввод открыт для вставки ключа из буфера обмена.</Text><Text style={styles.helper}>Нужен для Agnes Video V2.0 и режимов фото, где требуется публичный URL. Для Flash используется прямая Base64-отправка.</Text></View>
+
+      <View style={styles.card}><SectionHeader icon="tune" title="Тайминги и лимиты Free" subtitle="Защитные значения клиента — лимиты сервера могут измениться" /><View style={styles.grid}><Field label="Polling видео" value={String(settings.pollIntervalSec)} onChangeText={(value) => setSettings({ pollIntervalSec: Math.max(5, Number(value) || 5) })} suffix="сек" /><Field label="Пауза фото" value={String(settings.minImageIntervalSec)} onChangeText={(value) => setSettings({ minImageIntervalSec: Math.max(0, Number(value) || 0) })} suffix="сек" /><Field label="Пауза видео" value={String(settings.minVideoIntervalSec)} onChangeText={(value) => setSettings({ minVideoIntervalSec: Math.max(0, Number(value) || 0) })} suffix="сек" /><Field label="Старт retry" value={String(settings.retryBaseSec)} onChangeText={(value) => setSettings({ retryBaseSec: Math.max(5, Number(value) || 5) })} suffix="сек" /></View><Field label="Автоповторы временных ошибок" value={String(settings.maxAutoRetries)} onChangeText={(value) => setSettings({ maxAutoRetries: Math.min(10, Math.max(0, Number(value) || 0)) })} suffix="раз" /><Text style={styles.helper}>Free/default actual RPM: видео 1; фото 1K — 20, 2K — 10, 3K/4K — 1. При 429 приложение снижает частоту, ждёт и повторяет с exponential backoff.</Text></View>
+
+      <View style={styles.card}><SectionHeader icon="notifications-none" title="Уведомления и очередь" subtitle="Поведение фонового слоя прототипа" /><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={styles.settingTitle}>Автоматически продолжать очередь</Text><Text style={styles.settingHint}>После завершения задача профиля берётся следующей</Text></View><Switch value={settings.autoContinue} onValueChange={(value) => setSettings({ autoContinue: value })} trackColor={{ false: "#314554", true: "#24557C" }} thumbColor={settings.autoContinue ? blue : "#8EA0AF"} /></View><View style={styles.settingRow}><View style={styles.settingCopy}><Text style={styles.settingTitle}>Уведомления</Text><Text style={styles.settingHint}>Тихий прогресс и отдельное уведомление о готовности</Text></View><Switch value={settings.notifications} onValueChange={(value) => setSettings({ notifications: value })} trackColor={{ false: "#314554", true: "#24557C" }} thumbColor={settings.notifications ? blue : "#8EA0AF"} /></View></View>
+
+      <View style={styles.nativeNote}><MaterialIcons name="verified" size={17} color="#4FE3A1" /><Text style={styles.nativeNoteText}>В Android-сборке сохранение готовых фото и видео выполняется через MediaStore в Pictures/Agnes-AI и Movies/Agnes-AI без запроса на изменение уже сохранённого файла. WorkManager используется для базовых text2img и text-to-video задач.</Text></View>
+    </ScrollView>
+  </ScreenContainer>;
+}
+
+const styles = StyleSheet.create({ content: { paddingBottom: 34 }, eyebrow: { color: blue, fontSize: 11, fontWeight: "800", letterSpacing: 1.6 }, title: { color: "#F3F8FC", fontSize: 28, fontWeight: "800", marginTop: 5 }, subtitle: { color: "#8FA5B9", fontSize: 13, lineHeight: 19, marginTop: 7, marginBottom: 14 }, infoBanner: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: "#102D2B", borderWidth: 1, borderColor: "#245D53", borderRadius: 13, padding: 12, marginBottom: 13 }, infoText: { flex: 1, color: "#A9DCCA", fontSize: 11, lineHeight: 16 }, card: { backgroundColor: "#10202E", borderRadius: 18, borderWidth: 1, borderColor: "#20384B", padding: 15, marginBottom: 13 }, sectionHeader: { flexDirection: "row", alignItems: "center", marginBottom: 13 }, sectionIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: "#142E44", marginRight: 10 }, sectionTitle: { color: "#E6F0F7", fontSize: 16, fontWeight: "800" }, sectionSubtitle: { color: "#6F879A", fontSize: 10, marginTop: 3 }, profileRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#1D3445" }, profileAvatar: { width: 36, height: 36, borderRadius: 12, alignItems: "center", justifyContent: "center", marginRight: 9 }, avatarText: { fontSize: 15, fontWeight: "800" }, profileInfo: { flex: 1 }, profileName: { color: "#DDEBF3", fontWeight: "800", fontSize: 13 }, profileKey: { color: "#71899D", fontSize: 10, marginTop: 3 }, smallIcon: { padding: 7, marginLeft: 2 }, addProfile: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderWidth: 1, borderColor: "#2C5676", borderRadius: 11, minHeight: 42, marginTop: 10 }, addProfileText: { color: "#A9D9FF", fontSize: 12, fontWeight: "800" }, editor: { marginTop: 12, backgroundColor: "#0C1A27", borderRadius: 13, padding: 12, borderWidth: 1, borderColor: "#294154" }, editorTitle: { color: "#DDEBF3", fontSize: 13, fontWeight: "800", marginBottom: 9 }, textInput: { minHeight: 44, borderRadius: 10, backgroundColor: "#08131D", borderWidth: 1, borderColor: "#294154", paddingHorizontal: 11, color: "#EDF6FC", fontSize: 13, marginBottom: 9 }, pasteHint: { color: "#83A5BC", fontSize: 10, lineHeight: 14, marginBottom: 10 }, editorActions: { flexDirection: "row", gap: 8 }, cancelButton: { flex: 1, minHeight: 42, borderRadius: 10, backgroundColor: "#1B2C39", alignItems: "center", justifyContent: "center" }, cancelText: { color: "#A2B4C2", fontSize: 12, fontWeight: "700" }, saveButton: { flex: 1.4, minHeight: 42, borderRadius: 10, backgroundColor: blue, alignItems: "center", justifyContent: "center" }, saveText: { color: "#07111D", fontSize: 12, fontWeight: "900" }, helper: { color: "#748A9D", fontSize: 10, lineHeight: 15, marginTop: 7 }, field: { flex: 1 }, fieldLabel: { color: "#9DB2C2", fontSize: 11, fontWeight: "700", marginBottom: 6 }, grid: { flexDirection: "row", flexWrap: "wrap", gap: 10 }, inputRow: { flexDirection: "row", alignItems: "center", minHeight: 43, borderRadius: 10, backgroundColor: "#0A1722", borderWidth: 1, borderColor: "#294154" }, input: { flex: 1, color: "#EDF6FC", paddingHorizontal: 10, fontSize: 13, minWidth: 0 }, suffix: { color: "#71899D", fontSize: 10, paddingRight: 9 }, settingRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: 1, borderTopColor: "#1D3445" }, settingCopy: { flex: 1 }, settingTitle: { color: "#DDEBF3", fontSize: 12, fontWeight: "800" }, settingHint: { color: "#71899D", fontSize: 10, marginTop: 3, lineHeight: 14 }, nativeNote: { flexDirection: "row", gap: 8, backgroundColor: "#2E2818", borderWidth: 1, borderColor: "#665327", borderRadius: 12, padding: 11, marginBottom: 10 }, nativeNoteText: { flex: 1, color: "#D7C18B", fontSize: 10, lineHeight: 15 },
+});
