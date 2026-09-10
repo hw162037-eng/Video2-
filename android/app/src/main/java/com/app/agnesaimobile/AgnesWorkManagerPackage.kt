@@ -8,6 +8,7 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.Arguments
@@ -52,6 +53,7 @@ class AgnesWorkManagerModule(private val reactContext: ReactApplicationContext) 
       val request = OneTimeWorkRequestBuilder<GenerationWorker>()
         .setInputData(input)
         .setConstraints(constraints)
+        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
         .addTag("agnes-generation")
         .addTag("agnes-task-$taskId")
