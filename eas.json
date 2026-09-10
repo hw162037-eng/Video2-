@@ -1,7 +1,13 @@
 {
+  "cli": {
+    "appVersionSource": "remote"
+  },
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "EXPO_USE_COMMUNITY_AUTOLINKING": "1"
+      },
       "android": {
         "buildType": "apk"
       }
