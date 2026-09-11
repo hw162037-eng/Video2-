@@ -52,7 +52,8 @@ function wait(ms: number) {
 export function AppStoreProvider({ children }: PropsWithChildren) {
   const [hydrated, setHydrated] = useState(false);
   const [state, setState] = useState<PersistedState>({ profiles: [], sharedImgbbKey: "", settings: DEFAULT_SETTINGS, tasks: [], history: [] });
-  const runningRef = useRef(new Set<string>());
+  const [queueTick, setQueueTick] = useState(0);
+  const runningRef = useRef(new Map<string, string>());
   const cancelledRef = useRef(new Set<string>());
   const lastSubmittedRef = useRef<Record<string, number>>({});
   const pausedLanesRef = useRef(new Set<string>());
@@ -87,7 +88,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
           if (["SUBMITTING", "RETRY_WAIT", "RATE_LIMITED", "PROCESSING"].includes(nativeState.state)) {
             updateTaskInternal(task.id, {
               status: "processing",
-              stage: nativeState.state === "RATE_LIMITED" ? "Ожидание лимита Agnes API" : nativeState.state === "RETRY_WAIT" ? "Ожидание повтора сетевого запроса" : "Восстановление фоновой генерации",
+              stage: nativeState.state === "RATE_LIMITED" ? "Ожидание лимита Agnes API" : nativeState.state === "RETRY_WAIT" ? "Ожидание повтора сетевого запроса" : nativeState.state === "SUBMITTING" ? "Отправка задачи в Agnes" : "Генерация на сервере · проверка Agnes",
               progress: nativeState.progress || Math.max(5, task.progress),
               serverId: nativeState.serverId,
               resultUrl: nativeState.resultUrl,
@@ -117,6 +118,12 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     return () => { stopped = true; clearInterval(timer); };
   }, [hydrated, state.tasks, state.settings.notifications]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = setInterval(() => setQueueTick((value) => value + 1), Math.max(1, state.settings.queueCheckIntervalSec) * 1000);
+    return () => clearInterval(timer);
+  }, [hydrated, state.settings.queueCheckIntervalSec]);
+
   const updateTaskInternal = (id: string, patch: Partial<GenerationTask>) => {
     setState((current) => ({
       ...current,
@@ -144,8 +151,17 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     for (const task of runnable) {
       const profile = state.profiles.find((item) => item.id === task.profileId);
       const lane = `${task.profileId}:${task.kind}`;
-      if (cancelledRef.current.has(task.id) || !profile?.enabled || !profile.agnesKey || runningRef.current.has(lane) || (!state.settings.autoContinue && pausedLanesRef.current.has(lane))) continue;
-      runningRef.current.add(lane);
+      const ownerId = runningRef.current.get(lane);
+      const ownerTask = ownerId ? state.tasks.find((item) => item.id === ownerId) : undefined;
+      if (ownerId && state.settings.autoClearStaleLanes && (!ownerTask || ["completed", "failed", "cancelled"].includes(ownerTask.status))) {
+        runningRef.current.delete(lane);
+        setQueueTick((value) => value + 1);
+      }
+      if (cancelledRef.current.has(task.id) || !profile?.enabled || !profile.agnesKey || runningRef.current.has(lane) || (!state.settings.autoContinue && pausedLanesRef.current.has(lane))) {
+        if (runningRef.current.has(lane) && task.stage !== `Ожидание задачи ${runningRef.current.get(lane)}`) updateTaskInternal(task.id, { stage: `Ожидание задачи ${runningRef.current.get(lane)}` });
+        continue;
+      }
+      runningRef.current.set(lane, task.id);
 
       void (async () => {
         let startedAt = 0;
@@ -164,7 +180,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
             updateTaskInternal(task.id, { stage: "Подготовка Foreground Service", progress: 20 });
             const payload = await buildNativePayload(task, state.sharedImgbbKey);
             await startNativeGeneration(task.id, task.kind, profile.agnesKey, profile.id, payload, state.settings.pollIntervalSec);
-            updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: 35 });
+            updateTaskInternal(task.id, { status: "processing", stage: "Ожидание ответа Agnes", progress: 20 });
             let nativeState = await getNativeGenerationStatus(task.id);
             for (let startupCheck = 0; nativeState.state === "NOT_FOUND" && startupCheck < 10; startupCheck += 1) {
               await wait(1000);
@@ -180,7 +196,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
                   ? "Ожидание повтора сетевого запроса"
                   : nativeState.state === "SUBMITTING"
                     ? "Отправка задачи в Agnes API"
-                    : "Foreground Service выполняет задачу";
+                    : "Генерация на сервере · проверка Agnes";
               updateTaskInternal(task.id, { status: "processing", stage: waitingStage, progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, errorCode: nativeState.errorCode, errorMessage: nativeState.errorMessage });
             }
             const completedAt = Date.now();
@@ -252,18 +268,23 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
             updateTaskInternal(task.id, { status: "failed", stage: "Генерация завершилась ошибкой", progress: 100, attempts, errorCode: apiError.code, errorMessage: apiError.message, completedAt, durationMs: startedAt ? completedAt - startedAt : undefined });
           }
         } finally {
-          runningRef.current.delete(lane);
+          if (runningRef.current.get(lane) === task.id) {
+            runningRef.current.delete(lane);
+            setQueueTick((value) => value + 1);
+          }
         }
       })();
     }
-  }, [hydrated, state.tasks, state.profiles, state.sharedImgbbKey, state.settings]);
+  }, [hydrated, state.tasks, state.profiles, state.sharedImgbbKey, state.settings, queueTick]);
 
   const value = useMemo(() => ({
     hydrated,
     ...state,
     addTask: (task: GenerationTask) => {
       pausedLanesRef.current.delete(`${task.profileId}:${task.kind}`);
+      cancelledRef.current.delete(task.id);
       setState((current) => ({ ...current, tasks: [task, ...current.tasks] }));
+      setQueueTick((value) => value + 1);
     },
     updateTask: updateTaskInternal,
     saveTaskResult: (id: string) => {

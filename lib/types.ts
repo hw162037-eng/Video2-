@@ -25,6 +25,11 @@ export type AppSettings = {
   maxAutoRetries: number;
   autoContinue: boolean;
   notifications: boolean;
+  developerMode: boolean;
+  honestProgress: boolean;
+  showTechnicalIds: boolean;
+  queueCheckIntervalSec: number;
+  autoClearStaleLanes: boolean;
 };
 
 export type GenerationTask = {
@@ -92,6 +97,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxAutoRetries: 4,
   autoContinue: true,
   notifications: true,
+  developerMode: false,
+  honestProgress: true,
+  showTechnicalIds: false,
+  queueCheckIntervalSec: 5,
+  autoClearStaleLanes: true,
 };
 
 export const DEFAULT_PROFILES: ApiProfile[] = [
