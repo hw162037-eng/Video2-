@@ -107,10 +107,12 @@ class GenerationForegroundService : Service() {
       val submitPath = if (kind == "image") "/v1/images/generations" else "/v1/videos"
       val submitUrl = "https://apihub.agnes-ai.com$submitPath"
       var submitAttempt = 0
-      val submitted = while (true) {
+      var submitted: JSONObject
+      while (true) {
         try {
           awaitProfileSlot(profileId)
-          requestJson(submitUrl, apiKey, payload)
+          submitted = requestJson(submitUrl, apiKey, payload)
+          break
         } catch (error: IOException) {
           val retryable = error !is ApiHttpException || error.status == 429 || error.status in 500..599
           if (!retryable || submitAttempt >= MAX_SUBMIT_NETWORK_RETRIES) throw error
