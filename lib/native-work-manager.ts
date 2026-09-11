@@ -5,6 +5,8 @@ export type NativeWorkStatus = {
   state: "SUBMITTING" | "RETRY_WAIT" | "RATE_LIMITED" | "PROCESSING" | "SERVER_READY" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "NOT_FOUND";
   runAttemptCount: number;
   startedAt?: number;
+  submittedAt?: number;
+  pollingDurationMs?: number;
   progress?: number;
   serverId?: string;
   resultUrl?: string;

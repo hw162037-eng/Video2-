@@ -101,10 +101,11 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
           const completedAt = Date.now();
           const effectiveStartedAt = nativeState.startedAt || task.startedAt || task.createdAt;
           const generationDuration = Math.max(0, completedAt - effectiveStartedAt);
-          updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: generationDuration, errorCode: undefined, errorMessage: undefined });
+          const serverGenerationMs = nativeState.submittedAt ? Math.max(0, completedAt - nativeState.submittedAt) : generationDuration;
+          updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: generationDuration, totalDurationMs: completedAt - (task.queuedAt ?? task.createdAt), serverGenerationMs, pollingDurationMs: nativeState.pollingDurationMs ?? 0, errorCode: undefined, errorMessage: undefined });
           recordHistory(task, nativeState.resultUrl, completedAt, generationDuration);
           let localUri: string | undefined;
-          try { localUri = await saveResultLocally(nativeState.resultUrl, task); } catch { localUri = undefined; }
+          try { localUri = state.settings.autoSaveToDevice ? await saveResultLocally(nativeState.resultUrl, task) : undefined; } catch { localUri = undefined; }
           updateTaskInternal(task.id, { localUri, stage: localUri ? `${task.kind === "video" ? "Видео" : "Изображение"} сохранено на устройстве` : `${task.kind === "video" ? "Видео" : "Изображение"} готово на сервере` });
           if (localUri) recordHistory(task, nativeState.resultUrl, completedAt, generationDuration, localUri);
           if (state.settings.notifications) await notifyGenerationCompleted({ id: task.id, kind: task.kind, localUri, resultUrl: nativeState.resultUrl });
@@ -165,22 +166,29 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
 
       void (async () => {
         let startedAt = 0;
+        let prepareStartedAt = 0;
+        let submitStartedAt = 0;
         try {
           const interval = task.kind === "image" ? state.settings.minImageIntervalSec : state.settings.minVideoIntervalSec;
           const elapsed = Date.now() - (lastSubmittedRef.current[lane] ?? 0);
           if (elapsed < interval * 1000) await wait(interval * 1000 - elapsed);
           if (cancelledRef.current.has(task.id)) return;
+          if (!state.tasks.some((item) => item.id === task.id && item.status === "queued")) return;
           startedAt = Date.now();
-          updateTaskInternal(task.id, { status: "preparing", stage: "Подготовка файлов и параметров", progress: 5, startedAt, completedAt: undefined, durationMs: undefined });
+          prepareStartedAt = startedAt;
+          updateTaskInternal(task.id, { status: "preparing", stage: "Подготовка файлов и параметров", progress: 5, startedAt, completedAt: undefined, durationMs: undefined, queueWaitMs: Math.max(0, startedAt - (task.queuedAt ?? task.createdAt)) });
           await wait(250);
+          submitStartedAt = Date.now();
           updateTaskInternal(task.id, { status: "submitting", stage: "Отправка запроса в Agnes AI", progress: 25 });
 
           const nativeEligible = hasNativeForegroundService();
           if (nativeEligible) {
             updateTaskInternal(task.id, { stage: "Подготовка Foreground Service", progress: 20 });
             const payload = await buildNativePayload(task, state.sharedImgbbKey);
+            if (cancelledRef.current.has(task.id)) return;
+            updateTaskInternal(task.id, { prepareDurationMs: Date.now() - prepareStartedAt, payloadBytes: JSON.stringify(payload).length });
             await startNativeGeneration(task.id, task.kind, profile.agnesKey, profile.id, payload, state.settings.pollIntervalSec);
-            updateTaskInternal(task.id, { status: "processing", stage: "Ожидание ответа Agnes", progress: 20 });
+            updateTaskInternal(task.id, { status: "processing", stage: "Ожидание ответа Agnes", progress: 20, submitDurationMs: Date.now() - submitStartedAt });
             let nativeState = await getNativeGenerationStatus(task.id);
             for (let startupCheck = 0; nativeState.state === "NOT_FOUND" && startupCheck < 10; startupCheck += 1) {
               await wait(1000);
@@ -197,17 +205,18 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
                   : nativeState.state === "SUBMITTING"
                     ? "Отправка задачи в Agnes API"
                     : "Генерация на сервере · проверка Agnes";
-              updateTaskInternal(task.id, { status: "processing", stage: waitingStage, progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, errorCode: nativeState.errorCode, errorMessage: nativeState.errorMessage });
+              updateTaskInternal(task.id, { status: "processing", stage: waitingStage, progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, errorCode: nativeState.errorCode, errorMessage: nativeState.errorMessage, lastPollAt: Date.now() });
             }
             const completedAt = Date.now();
             if (nativeState.state === "SERVER_READY" && nativeState.resultUrl) {
               const effectiveStartedAt = nativeState.startedAt || startedAt;
               const generationDuration = Math.max(0, completedAt - effectiveStartedAt);
-              updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: generationDuration, errorMessage: undefined, errorCode: undefined });
+              const serverGenerationMs = nativeState.submittedAt ? Math.max(0, completedAt - nativeState.submittedAt) : generationDuration;
+              updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: generationDuration, totalDurationMs: completedAt - (task.queuedAt ?? task.createdAt), serverGenerationMs, pollingDurationMs: nativeState.pollingDurationMs ?? 0, errorMessage: undefined, errorCode: undefined });
               recordHistory(task, nativeState.resultUrl, completedAt, generationDuration);
               let localUri: string | undefined;
-              try { localUri = await saveResultLocally(nativeState.resultUrl, task); } catch { localUri = undefined; }
-              updateTaskInternal(task.id, { localUri, stage: localUri ? `${task.kind === "video" ? "Видео" : "Изображение"} сохранено на устройстве` : `${task.kind === "video" ? "Видео" : "Изображение"} готово на сервере`, errorMessage: undefined, errorCode: undefined });
+              try { localUri = state.settings.autoSaveToDevice ? await saveResultLocally(nativeState.resultUrl, task) : undefined; } catch { localUri = undefined; }
+              updateTaskInternal(task.id, { localUri, stage: localUri ? `${task.kind === "video" ? "Видео" : "Изображение"} сохранено на устройстве` : `${task.kind === "video" ? "Видео" : "Изображение"} готово на сервере`, errorMessage: undefined, errorCode: undefined, totalDurationMs: Date.now() - (task.queuedAt ?? task.createdAt) });
               if (localUri) recordHistory(task, nativeState.resultUrl, completedAt, generationDuration, localUri);
               if (state.settings.notifications) await notifyGenerationCompleted({ id: task.id, kind: task.kind, localUri, resultUrl: nativeState.resultUrl });
               return;
@@ -223,7 +232,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
 
           if (task.kind === "image") {
             const completedAt = Date.now();
-            const localUri = submitted.resultUrl ? await saveResultLocally(submitted.resultUrl, task) : undefined;
+            const localUri = submitted.resultUrl && state.settings.autoSaveToDevice ? await saveResultLocally(submitted.resultUrl, task) : undefined;
             const generationDuration = Math.max(0, completedAt - startedAt);
             updateTaskInternal(task.id, { status: "completed", stage: localUri ? "Изображение сохранено на устройстве" : "Изображение готово", progress: 100, serverId: submitted.serverId, resultUrl: submitted.resultUrl, localUri, completedAt, durationMs: generationDuration });
             if (submitted.resultUrl) recordHistory(task, submitted.resultUrl, completedAt, generationDuration, localUri);
@@ -242,7 +251,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
             if (result.status === "completed" && result.resultUrl) {
               finished = true;
               const completedAt = Date.now();
-              const localUri = await saveResultLocally(result.resultUrl, task);
+              const localUri = state.settings.autoSaveToDevice ? await saveResultLocally(result.resultUrl, task) : undefined;
               const generationDuration = Math.max(0, completedAt - startedAt);
               updateTaskInternal(task.id, { status: "completed", stage: localUri ? "Видео сохранено на устройстве" : "Видео готово", progress: 100, resultUrl: result.resultUrl, localUri, completedAt, durationMs: generationDuration });
               recordHistory(task, result.resultUrl, completedAt, generationDuration, localUri);
@@ -283,7 +292,8 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     addTask: (task: GenerationTask) => {
       pausedLanesRef.current.delete(`${task.profileId}:${task.kind}`);
       cancelledRef.current.delete(task.id);
-      setState((current) => ({ ...current, tasks: [task, ...current.tasks] }));
+      const queuedAt = task.queuedAt ?? Date.now();
+      setState((current) => ({ ...current, tasks: [{ ...task, queuedAt }, ...current.tasks] }));
       setQueueTick((value) => value + 1);
     },
     updateTask: updateTaskInternal,
@@ -302,7 +312,11 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
       if (target && ["preparing", "submitting", "processing", "retry_wait"].includes(target.status) && hasNativeForegroundService()) void cancelNativeGeneration(id);
       setState((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === id && ["queued", "preparing", "submitting", "processing", "retry_wait"].includes(task.status) ? { ...task, status: "cancelled", stage: "Отменено пользователем", completedAt: Date.now(), updatedAt: Date.now() } : task) }));
     },
-    removeTask: (id: string) => setState((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== id || !["queued", "completed", "failed", "cancelled"].includes(task.status)) })),
+    removeTask: (id: string) => {
+      cancelledRef.current.add(id);
+      setState((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== id || !["queued", "completed", "failed", "cancelled"].includes(task.status)) }));
+      setQueueTick((value) => value + 1);
+    },
     saveProfile: (profile: ApiProfile) => setState((current) => ({
       ...current,
       profiles: current.profiles.some((item) => item.id === profile.id) ? current.profiles.map((item) => item.id === profile.id ? profile : item) : [...current.profiles, profile],

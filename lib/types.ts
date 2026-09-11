@@ -25,11 +25,13 @@ export type AppSettings = {
   maxAutoRetries: number;
   autoContinue: boolean;
   notifications: boolean;
+  autoSaveToDevice: boolean;
   developerMode: boolean;
   honestProgress: boolean;
   showTechnicalIds: boolean;
   queueCheckIntervalSec: number;
   autoClearStaleLanes: boolean;
+  showTimingBreakdown: boolean;
 };
 
 export type GenerationTask = {
@@ -45,9 +47,18 @@ export type GenerationTask = {
   progress: number;
   createdAt: number;
   updatedAt: number;
+  queuedAt?: number;
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
+  queueWaitMs?: number;
+  prepareDurationMs?: number;
+  submitDurationMs?: number;
+  serverGenerationMs?: number;
+  pollingDurationMs?: number;
+  totalDurationMs?: number;
+  payloadBytes?: number;
+  lastPollAt?: number;
   serverId?: string;
   resultUrl?: string;
   localUri?: string;
@@ -97,11 +108,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxAutoRetries: 4,
   autoContinue: true,
   notifications: true,
+  autoSaveToDevice: true,
   developerMode: false,
   honestProgress: true,
   showTechnicalIds: false,
   queueCheckIntervalSec: 5,
   autoClearStaleLanes: true,
+  showTimingBreakdown: true,
 };
 
 export const DEFAULT_PROFILES: ApiProfile[] = [
