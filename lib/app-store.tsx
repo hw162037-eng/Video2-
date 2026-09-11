@@ -5,7 +5,7 @@ import { AgnesApiError, buildNativePayload, pollVideo, saveResultLocally, submit
 import { loadPersistedState, persistState } from "@/lib/storage";
 import { DEFAULT_SETTINGS, type ApiProfile, type AppSettings, type GenerationTask, type PersistedState } from "@/lib/types";
 import { notifyGenerationCompleted } from "@/lib/notifications";
-import { cancelNativeGeneration, enqueueNativeGeneration, getNativeGenerationStatus, hasNativeWorkManager } from "@/lib/native-work-manager";
+import { cancelNativeGeneration, getNativeGenerationStatus, hasNativeForegroundService, startNativeGeneration } from "@/lib/native-work-manager";
 
 const AppStoreContext = createContext<{
   hydrated: boolean;
@@ -107,26 +107,29 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
           await wait(250);
           updateTaskInternal(task.id, { status: "submitting", stage: "Отправка запроса в Agnes AI", progress: 25 });
 
-          const nativeEligible = hasNativeWorkManager();
+          const nativeEligible = hasNativeForegroundService();
           if (nativeEligible) {
-            updateTaskInternal(task.id, { stage: "Подготовка файлов для фоновой задачи", progress: 20 });
+            updateTaskInternal(task.id, { stage: "Подготовка Foreground Service", progress: 20 });
             const payload = await buildNativePayload(task, state.sharedImgbbKey);
-            await enqueueNativeGeneration(task.id, task.kind, profile.agnesKey, payload, state.settings.pollIntervalSec);
-            updateTaskInternal(task.id, { status: "processing", stage: "Нативный WorkManager выполняет задачу", progress: 35 });
+            await startNativeGeneration(task.id, task.kind, profile.agnesKey, payload, state.settings.pollIntervalSec);
+            updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: 35 });
             let nativeState = await getNativeGenerationStatus(task.id);
-            while (["ENQUEUED", "RUNNING", "BLOCKED"].includes(nativeState.state)) {
+            while (["SUBMITTING", "PROCESSING"].includes(nativeState.state)) {
               await wait(3000);
               nativeState = await getNativeGenerationStatus(task.id);
-              const nativeProgress = nativeState.state === "RUNNING" ? (nativeState.progress || Math.min(95, 40 + nativeState.runAttemptCount * 2)) : 35;
-              updateTaskInternal(task.id, { status: "processing", stage: "Нативный WorkManager выполняет задачу", progress: nativeProgress, attempts: nativeState.runAttemptCount });
+              const nativeProgress = nativeState.progress || 35;
+              updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl });
             }
             const completedAt = Date.now();
-            if (nativeState.state === "SUCCEEDED" && nativeState.localUri) {
-              updateTaskInternal(task.id, { status: "completed", stage: task.kind === "video" ? "Видео сохранено на устройстве" : "Изображение сохранено на устройстве", progress: 100, localUri: nativeState.localUri, completedAt, durationMs: completedAt - startedAt });
-              if (state.settings.notifications) await notifyGenerationCompleted({ id: task.id, kind: task.kind, localUri: nativeState.localUri });
+            if (nativeState.state === "SERVER_READY" && nativeState.resultUrl) {
+              updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: completedAt - startedAt, errorMessage: undefined, errorCode: undefined });
+              const localUri = await saveResultLocally(nativeState.resultUrl, task);
+              updateTaskInternal(task.id, { localUri, stage: localUri ? `${task.kind === "video" ? "Видео" : "Изображение"} сохранено на устройстве` : `${task.kind === "video" ? "Видео" : "Изображение"} готово на сервере`, errorMessage: undefined, errorCode: undefined });
+              if (state.settings.notifications) await notifyGenerationCompleted({ id: task.id, kind: task.kind, localUri, resultUrl: nativeState.resultUrl });
               return;
             }
-            throw new AgnesApiError(nativeState.errorMessage || "Нативный Worker завершил задачу без результата.", { retryable: true });
+            if (nativeState.state === "CANCELLED") throw new AgnesApiError("Задача отменена пользователем.", { retryable: false });
+            throw new AgnesApiError(nativeState.errorMessage || "Foreground Service завершил задачу без результата.", { retryable: false });
           }
 
           const submitted = task.kind === "image"
@@ -203,7 +206,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     cancelTask: (id: string) => {
       cancelledRef.current.add(id);
       const target = state.tasks.find((task) => task.id === id);
-      if (target && ["preparing", "submitting", "processing", "retry_wait"].includes(target.status) && hasNativeWorkManager()) void cancelNativeGeneration(id);
+      if (target && ["preparing", "submitting", "processing", "retry_wait"].includes(target.status) && hasNativeForegroundService()) void cancelNativeGeneration(id);
       setState((current) => ({ ...current, tasks: current.tasks.map((task) => task.id === id && ["queued", "preparing", "submitting", "processing", "retry_wait"].includes(task.status) ? { ...task, status: "cancelled", stage: "Отменено пользователем", completedAt: Date.now(), updatedAt: Date.now() } : task) }));
     },
     removeTask: (id: string) => setState((current) => ({ ...current, tasks: current.tasks.filter((task) => task.id !== id || !["queued", "completed", "failed", "cancelled"].includes(task.status)) })),

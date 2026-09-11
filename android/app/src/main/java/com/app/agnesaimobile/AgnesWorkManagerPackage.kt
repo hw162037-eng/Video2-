@@ -1,7 +1,9 @@
 package com.app.agnesaimobile
 
+import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import androidx.core.content.ContextCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -32,116 +34,112 @@ class AgnesWorkManagerPackage : ReactPackage {
 
 class AgnesWorkManagerModule(private val reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
   private val ioExecutor = Executors.newCachedThreadPool()
-
   override fun getName() = "AgnesWorkManager"
 
   @ReactMethod
-  fun enqueueGeneration(taskId: String, kind: String, apiKey: String, payloadJson: String, pollIntervalSec: Int, promise: Promise) {
+  fun startGeneration(taskId: String, kind: String, apiKey: String, payloadJson: String, pollIntervalSec: Int, promise: Promise) {
     try {
-      require(taskId.isNotBlank()) { "Пустой идентификатор задачи" }
-      require(apiKey.isNotBlank()) { "Пустой Agnes AI API key" }
-      val input = Data.Builder()
-        .putString(GenerationWorker.KEY_TASK_ID, taskId)
-        .putString(GenerationWorker.KEY_KIND, kind)
-        .putString(GenerationWorker.KEY_API_KEY, apiKey)
-        .putString(GenerationWorker.KEY_PAYLOAD, payloadJson)
-        .putInt(GenerationWorker.KEY_POLL_INTERVAL_SEC, pollIntervalSec.coerceIn(5, 120))
-        .build()
-      val constraints = Constraints.Builder()
-        .setRequiredNetworkType(NetworkType.CONNECTED)
-        .build()
-      val request = OneTimeWorkRequestBuilder<GenerationWorker>()
-        .setInputData(input)
-        .setConstraints(constraints)
-        .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-        .addTag("agnes-generation")
-        .addTag("agnes-task-$taskId")
-        .build()
-      WorkManager.getInstance(reactContext).enqueueUniqueWork("agnes-task-$taskId", ExistingWorkPolicy.KEEP, request)
-      promise.resolve(request.id.toString())
+      require(taskId.isNotBlank() && apiKey.isNotBlank() && payloadJson.isNotBlank()) { "Пустые параметры native генерации" }
+      val intent = Intent(reactContext, GenerationForegroundService::class.java).apply {
+        action = GenerationForegroundService.ACTION_START
+        putExtra(GenerationForegroundService.EXTRA_TASK_ID, taskId)
+        putExtra(GenerationForegroundService.EXTRA_KIND, kind)
+        putExtra(GenerationForegroundService.EXTRA_API_KEY, apiKey)
+        putExtra(GenerationForegroundService.EXTRA_PAYLOAD, payloadJson)
+        putExtra(GenerationForegroundService.EXTRA_POLL_INTERVAL, pollIntervalSec.coerceIn(5, 120))
+      }
+      AgnesDiagnostics.log(reactContext, taskId, "start_requested", "foreground_service")
+      ContextCompat.startForegroundService(reactContext, intent)
+      promise.resolve(true)
     } catch (error: Exception) {
-      promise.reject("WORK_ENQUEUE_FAILED", error)
+      AgnesDiagnostics.log(reactContext, taskId, "start_request_failed", error.message ?: error.javaClass.simpleName)
+      promise.reject("FOREGROUND_START_FAILED", error)
     }
   }
 
   @ReactMethod
   fun cancelGeneration(taskId: String, promise: Promise) {
     try {
+      val intent = Intent(reactContext, GenerationForegroundService::class.java).apply {
+        action = GenerationForegroundService.ACTION_CANCEL
+        putExtra(GenerationForegroundService.EXTRA_TASK_ID, taskId)
+      }
+      reactContext.startService(intent)
       WorkManager.getInstance(reactContext).cancelUniqueWork("agnes-task-$taskId")
+      AgnesDiagnostics.log(reactContext, taskId, "cancel_sent")
       promise.resolve(true)
     } catch (error: Exception) {
-      promise.reject("WORK_CANCEL_FAILED", error)
-    }
-  }
-
-  @ReactMethod
-  fun saveResultToMediaStore(resultUrl: String, taskId: String, kind: String, promise: Promise) {
-    ioExecutor.execute {
-      try {
-        val uri = MediaStoreSaver.saveFromUrl(reactContext, resultUrl, taskId, kind == "video")
-        promise.resolve(uri.toString())
-      } catch (error: Exception) {
-        promise.reject("MEDIASTORE_SAVE_FAILED", error)
-      }
-    }
-  }
-
-  @ReactMethod
-  fun extractLastFrame(videoUri: String, taskId: String, promise: Promise) {
-    ioExecutor.execute {
-      val retriever = MediaMetadataRetriever()
-      var downloadedVideo: File? = null
-      try {
-        val parsedUri = Uri.parse(videoUri)
-        if (parsedUri.scheme == "http" || parsedUri.scheme == "https") {
-          downloadedVideo = File(reactContext.cacheDir, "agnes-source-$taskId.mp4")
-          val connection = URL(videoUri).openConnection() as HttpURLConnection
-          connection.connectTimeout = 30_000
-          connection.readTimeout = 120_000
-          connection.instanceFollowRedirects = true
-          if (connection.responseCode !in 200..299) error("Не удалось скачать видео: HTTP ${connection.responseCode}")
-          connection.inputStream.use { input -> FileOutputStream(downloadedVideo).use { output -> input.copyTo(output) } }
-          connection.disconnect()
-          retriever.setDataSource(downloadedVideo.absolutePath)
-        } else {
-          retriever.setDataSource(reactContext, parsedUri)
-        }
-        val frame = retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST)
-          ?: throw IllegalStateException("Не удалось извлечь последний кадр видео")
-        val output = File(reactContext.cacheDir, "agnes-last-frame-$taskId.png")
-        FileOutputStream(output).use { stream ->
-          if (!frame.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)) {
-            throw IllegalStateException("Не удалось сохранить последний кадр")
-          }
-        }
-        frame.recycle()
-        promise.resolve(Uri.fromFile(output).toString())
-      } catch (error: Exception) {
-        promise.reject("LAST_FRAME_FAILED", error)
-      } finally {
-        retriever.release()
-        downloadedVideo?.delete()
-      }
+      promise.reject("CANCEL_FAILED", error)
     }
   }
 
   @ReactMethod
   fun getGenerationStatus(taskId: String, promise: Promise) {
+    try {
+      val raw = reactContext.getSharedPreferences(GenerationForegroundService.PREFS, 0).getString(taskId, null)
+      val result: WritableMap = Arguments.createMap()
+      if (raw == null) { result.putString("state", "NOT_FOUND"); result.putInt("runAttemptCount", 0); promise.resolve(result); return }
+      val json = org.json.JSONObject(raw)
+      result.putString("state", json.optString("state", "NOT_FOUND"))
+      result.putInt("runAttemptCount", 0)
+      result.putInt("progress", json.optInt("progress", 0))
+      result.putString("serverId", json.optString("serverId").takeIf { it.isNotBlank() })
+      result.putString("resultUrl", json.optString("resultUrl").takeIf { it.isNotBlank() })
+      result.putString("errorMessage", json.optString("errorMessage").takeIf { it.isNotBlank() })
+      promise.resolve(result)
+    } catch (error: Exception) { promise.reject("STATUS_FAILED", error) }
+  }
+
+  @ReactMethod
+  fun getDiagnosticLog(promise: Promise) { promise.resolve(AgnesDiagnostics.read(reactContext)) }
+
+  @ReactMethod
+  fun clearDiagnosticLog(promise: Promise) { AgnesDiagnostics.clear(reactContext); promise.resolve(true) }
+
+  @ReactMethod
+  fun saveResultToMediaStore(resultUrl: String, taskId: String, kind: String, promise: Promise) {
     ioExecutor.execute {
-      try {
-        val info = WorkManager.getInstance(reactContext).getWorkInfosForUniqueWork("agnes-task-$taskId").get().firstOrNull()
-        val result: WritableMap = Arguments.createMap()
-        result.putString("state", info?.state?.name ?: "NOT_FOUND")
-        result.putInt("runAttemptCount", info?.runAttemptCount ?: 0)
-        result.putInt("progress", info?.progress?.getInt("progress", 0) ?: 0)
-        info?.outputData?.getString("localUri")?.let { result.putString("localUri", it) }
-        info?.outputData?.getString("resultUrl")?.let { result.putString("resultUrl", it) }
-        info?.outputData?.getString("errorMessage")?.let { result.putString("errorMessage", it) }
-        promise.resolve(result)
-      } catch (error: Exception) {
-        promise.reject("WORK_STATUS_FAILED", error)
-      }
+      try { promise.resolve(MediaStoreSaver.saveFromUrl(reactContext, resultUrl, taskId, kind == "video").toString()) }
+      catch (error: Exception) { promise.reject("MEDIASTORE_SAVE_FAILED", error) }
     }
   }
+
+  @ReactMethod
+  fun extractFrameAtTime(videoUri: String, taskId: String, seconds: Double, promise: Promise) {
+    ioExecutor.execute {
+      val retriever = MediaMetadataRetriever(); var downloadedVideo: File? = null
+      try {
+        val parsed = Uri.parse(videoUri)
+        if (parsed.scheme == "http" || parsed.scheme == "https") {
+          downloadedVideo = File(reactContext.cacheDir, "agnes-source-$taskId.mp4")
+          val connection = URL(videoUri).openConnection() as HttpURLConnection
+          connection.connectTimeout = 30_000; connection.readTimeout = 120_000
+          connection.inputStream.use { input -> FileOutputStream(downloadedVideo).use { output -> input.copyTo(output) } }
+          connection.disconnect(); retriever.setDataSource(downloadedVideo.absolutePath)
+        } else retriever.setDataSource(reactContext, parsed)
+        val frame = retriever.getFrameAtTime((seconds.coerceAtLeast(0.0) * 1_000_000L).toLong(), MediaMetadataRetriever.OPTION_CLOSEST)
+          ?: throw IllegalStateException("Не удалось извлечь кадр")
+        val output = File(reactContext.cacheDir, "agnes-frame-$taskId-${System.currentTimeMillis()}.png")
+        FileOutputStream(output).use { if (!frame.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) throw IllegalStateException("Не удалось сохранить кадр") }
+        frame.recycle(); promise.resolve(Uri.fromFile(output).toString())
+      } catch (error: Exception) { promise.reject("FRAME_FAILED", error) }
+      finally { retriever.release(); downloadedVideo?.delete() }
+    }
+  }
+
+  @ReactMethod
+  fun extractLastFrame(videoUri: String, taskId: String, promise: Promise) = extractFrameAtTime(videoUri, taskId, 3600.0, promise)
+
+  @ReactMethod
+  fun enqueueGeneration(taskId: String, kind: String, apiKey: String, payloadJson: String, pollIntervalSec: Int, promise: Promise) {
+    try {
+      val input = Data.Builder().putString(GenerationWorker.KEY_TASK_ID, taskId).putString(GenerationWorker.KEY_KIND, kind).putString(GenerationWorker.KEY_API_KEY, apiKey).putString(GenerationWorker.KEY_PAYLOAD, payloadJson).putInt(GenerationWorker.KEY_POLL_INTERVAL_SEC, pollIntervalSec.coerceIn(5, 120)).build()
+      val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+      val request = OneTimeWorkRequestBuilder<GenerationWorker>().setInputData(input).setConstraints(constraints).setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS).addTag("agnes-generation").addTag("agnes-task-$taskId").build()
+      WorkManager.getInstance(reactContext).enqueueUniqueWork("agnes-task-$taskId", ExistingWorkPolicy.KEEP, request); promise.resolve(request.id.toString())
+    } catch (error: Exception) { promise.reject("WORK_ENQUEUE_FAILED", error) }
+  }
+
+  @ReactMethod
+  fun saveLegacyResultToMediaStore(resultUrl: String, taskId: String, kind: String, promise: Promise) = saveResultToMediaStore(resultUrl, taskId, kind, promise)
 }
