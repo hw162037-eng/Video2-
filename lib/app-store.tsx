@@ -118,14 +118,21 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
           if (nativeEligible) {
             updateTaskInternal(task.id, { stage: "Подготовка Foreground Service", progress: 20 });
             const payload = await buildNativePayload(task, state.sharedImgbbKey);
-            await startNativeGeneration(task.id, task.kind, profile.agnesKey, payload, state.settings.pollIntervalSec);
+            await startNativeGeneration(task.id, task.kind, profile.agnesKey, profile.id, payload, state.settings.pollIntervalSec);
             updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: 35 });
             let nativeState = await getNativeGenerationStatus(task.id);
-            while (["SUBMITTING", "PROCESSING"].includes(nativeState.state)) {
+            while (["SUBMITTING", "RETRY_WAIT", "RATE_LIMITED", "PROCESSING"].includes(nativeState.state)) {
               await wait(3000);
               nativeState = await getNativeGenerationStatus(task.id);
               const nativeProgress = nativeState.progress || 35;
-              updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl });
+              const waitingStage = nativeState.state === "RATE_LIMITED"
+                ? "Ожидание лимита Agnes API"
+                : nativeState.state === "RETRY_WAIT"
+                  ? "Ожидание повтора сетевого запроса"
+                  : nativeState.state === "SUBMITTING"
+                    ? "Отправка задачи в Agnes API"
+                    : "Foreground Service выполняет задачу";
+              updateTaskInternal(task.id, { status: "processing", stage: waitingStage, progress: nativeProgress, attempts: nativeState.runAttemptCount, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, errorCode: nativeState.errorCode, errorMessage: nativeState.errorMessage });
             }
             const completedAt = Date.now();
             if (nativeState.state === "SERVER_READY" && nativeState.resultUrl) {

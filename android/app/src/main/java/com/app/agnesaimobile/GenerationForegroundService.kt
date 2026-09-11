@@ -34,6 +34,7 @@ class GenerationForegroundService : Service() {
     const val EXTRA_TASK_ID = "taskId"
     const val EXTRA_KIND = "kind"
     const val EXTRA_API_KEY = "apiKey"
+    const val EXTRA_PROFILE_ID = "profileId"
     const val EXTRA_PAYLOAD_PATH = "payloadPath"
     const val EXTRA_POLL_INTERVAL = "pollIntervalSec"
     private const val CHANNEL_ID = "agnes_generation_service"
@@ -41,10 +42,14 @@ class GenerationForegroundService : Service() {
     const val PREFS = "agnes_service_tasks"
     private const val MAX_RUNTIME_MS = 2 * 60 * 60 * 1000L
     private const val MAX_POLL_BACKOFF_MS = 5 * 60 * 1000L
+    private const val MAX_SUBMIT_NETWORK_RETRIES = 5
+    private const val MAX_SUBMIT_BACKOFF_MS = 60_000L
+    private const val PROFILE_REQUEST_SPACING_MS = 4_000L
   }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val jobs = mutableMapOf<String, Job>()
+  private val profileNextRequestAt = mutableMapOf<String, Long>()
 
   override fun onCreate() {
     super.onCreate()
@@ -67,6 +72,7 @@ class GenerationForegroundService : Service() {
     val taskId = intent.getStringExtra(EXTRA_TASK_ID).orEmpty()
     val kind = intent.getStringExtra(EXTRA_KIND).orEmpty()
     val apiKey = intent.getStringExtra(EXTRA_API_KEY).orEmpty()
+    val profileId = intent.getStringExtra(EXTRA_PROFILE_ID).orEmpty().ifBlank { "default" }
     val payloadPath = intent.getStringExtra(EXTRA_PAYLOAD_PATH).orEmpty()
     val pollInterval = intent.getIntExtra(EXTRA_POLL_INTERVAL, 15).coerceIn(5, 120)
     if (taskId.isBlank() || apiKey.isBlank() || payloadPath.isBlank()) {
@@ -85,22 +91,40 @@ class GenerationForegroundService : Service() {
 
     jobs[taskId]?.cancel()
     jobs[taskId] = scope.launch {
-      runTask(taskId, kind, apiKey, payloadPath, pollInterval)
+      runTask(taskId, kind, apiKey, profileId, payloadPath, pollInterval)
     }
     return START_NOT_STICKY
   }
 
-  private suspend fun runTask(taskId: String, kind: String, apiKey: String, payloadPath: String, pollInterval: Int) {
+  private suspend fun runTask(taskId: String, kind: String, apiKey: String, profileId: String, payloadPath: String, pollInterval: Int) {
     val startedAt = System.currentTimeMillis()
     try {
       val payloadFile = File(Uri.parse(payloadPath).path ?: payloadPath)
       if (!payloadFile.exists()) throw IllegalStateException("Файл параметров задачи не найден")
       val payload = payloadFile.readText(Charsets.UTF_8)
-      payloadFile.delete()
       save(taskId, JSONObject().put("taskId", taskId).put("state", "SUBMITTING").put("progress", 5).put("startedAt", startedAt))
       updateNotification("Отправка запроса", 10)
       val submitPath = if (kind == "image") "/v1/images/generations" else "/v1/videos"
-      val submitted = requestJson("https://apihub.agnes-ai.com$submitPath", apiKey, payload)
+      val submitUrl = "https://apihub.agnes-ai.com$submitPath"
+      var submitAttempt = 0
+      val submitted = while (true) {
+        try {
+          awaitProfileSlot(profileId)
+          requestJson(submitUrl, apiKey, payload)
+        } catch (error: IOException) {
+          val retryable = error !is ApiHttpException || error.status == 429 || error.status in 500..599
+          if (!retryable || submitAttempt >= MAX_SUBMIT_NETWORK_RETRIES) throw error
+          submitAttempt += 1
+          val retryIn = minOf(MAX_SUBMIT_BACKOFF_MS, 5000L * (1L shl minOf(submitAttempt - 1, 4)))
+          val state = if (error is ApiHttpException && error.status == 429) "RATE_LIMITED" else "RETRY_WAIT"
+          save(taskId, JSONObject().put("taskId", taskId).put("state", state).put("progress", 10).put("startedAt", startedAt).put("submitRetryInMs", retryIn).put("submitAttempt", submitAttempt).put("errorCode", (error as? ApiHttpException)?.status ?: 0).put("errorMessage", error.message ?: "Сетевая ошибка"))
+          AgnesDiagnostics.log(this, taskId, "submit_retry", "status=${(error as? ApiHttpException)?.status ?: "network"} retry_in_ms=$retryIn attempt=$submitAttempt detail=${error.message?.take(160)}")
+          updateNotification(if (state == "RATE_LIMITED") "Лимит API, повтор через ${retryIn / 1000} сек" else "Нет сети, повтор через ${retryIn / 1000} сек", 10)
+          delay(retryIn)
+          continue
+        }
+      }
+      payloadFile.delete()
       AgnesDiagnostics.log(this, taskId, "api_submit_success", "kind=$kind")
       if (kind == "image") {
         val first = submitted.optJSONArray("data")?.optJSONObject(0)
@@ -124,6 +148,7 @@ class GenerationForegroundService : Service() {
         attempt += 1
         val pollUrl = "https://apihub.agnes-ai.com/agnesapi?video_id=${Uri.encode(videoId)}" + if (model.isNotBlank()) "&model_name=${Uri.encode(model)}" else ""
         val poll = try {
+          awaitProfileSlot(profileId)
           requestJson(pollUrl, apiKey, null)
         } catch (error: ApiHttpException) {
           if (error.status == 429 || error.status in 500..599) {
@@ -165,6 +190,16 @@ class GenerationForegroundService : Service() {
       jobs.remove(taskId)
       stopIfIdle()
     }
+  }
+
+  private suspend fun awaitProfileSlot(profileId: String) {
+    val waitMs = synchronized(profileNextRequestAt) {
+      val now = System.currentTimeMillis()
+      val wait = (profileNextRequestAt[profileId] ?: now) - now
+      profileNextRequestAt[profileId] = now + wait.coerceAtLeast(0L) + PROFILE_REQUEST_SPACING_MS
+      wait.coerceAtLeast(0L)
+    }
+    if (waitMs > 0) delay(waitMs)
   }
 
   private fun complete(taskId: String, resultUrl: String, kind: String, startedAt: Long) {

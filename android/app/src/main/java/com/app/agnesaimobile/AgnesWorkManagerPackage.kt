@@ -37,7 +37,7 @@ class AgnesWorkManagerModule(private val reactContext: ReactApplicationContext) 
   override fun getName() = "AgnesWorkManager"
 
   @ReactMethod
-  fun startGeneration(taskId: String, kind: String, apiKey: String, payloadPath: String, pollIntervalSec: Int, promise: Promise) {
+  fun startGeneration(taskId: String, kind: String, apiKey: String, profileId: String, payloadPath: String, pollIntervalSec: Int, promise: Promise) {
     try {
       require(taskId.isNotBlank() && apiKey.isNotBlank() && payloadPath.isNotBlank()) { "Пустые параметры native генерации" }
       val intent = Intent(reactContext, GenerationForegroundService::class.java).apply {
@@ -45,6 +45,7 @@ class AgnesWorkManagerModule(private val reactContext: ReactApplicationContext) 
         putExtra(GenerationForegroundService.EXTRA_TASK_ID, taskId)
         putExtra(GenerationForegroundService.EXTRA_KIND, kind)
         putExtra(GenerationForegroundService.EXTRA_API_KEY, apiKey)
+        putExtra(GenerationForegroundService.EXTRA_PROFILE_ID, profileId)
         putExtra(GenerationForegroundService.EXTRA_PAYLOAD_PATH, payloadPath)
         putExtra(GenerationForegroundService.EXTRA_POLL_INTERVAL, pollIntervalSec.coerceIn(5, 120))
       }
