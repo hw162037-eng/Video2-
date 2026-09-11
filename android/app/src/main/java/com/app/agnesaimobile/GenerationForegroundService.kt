@@ -117,12 +117,14 @@ class GenerationForegroundService : Service() {
         val pollUrl = "https://apihub.agnes-ai.com/agnesapi?video_id=${Uri.encode(videoId)}" + if (model.isNotBlank()) "&model_name=${Uri.encode(model)}" else ""
         val poll = requestJson(pollUrl, apiKey, null)
         val status = poll.optString("status", "processing").lowercase()
-        resultUrl = poll.optJSONObject("metadata")?.optString("url").orEmpty().ifBlank { poll.optString("url") }.ifBlank { poll.optString("video_url") }
+        val candidateUrl = poll.optJSONObject("metadata")?.optString("url").orEmpty().ifBlank { poll.optString("url") }.ifBlank { poll.optString("video_url") }
         if (status == "failed" || status == "error") throw IllegalStateException(poll.optString("error", "Сервер сообщил об ошибке видео"))
+        val isCompleted = status == "completed" || status == "succeeded" || status == "success" || status == "done"
+        resultUrl = if (isCompleted) candidateUrl else ""
         val progress = minOf(95, 20 + attempt * 75 / 240)
-        save(taskId, JSONObject().put("taskId", taskId).put("state", if (resultUrl.isBlank()) "PROCESSING" else "SERVER_READY").put("serverId", videoId).put("resultUrl", resultUrl).put("progress", progress).put("startedAt", startedAt))
+        save(taskId, JSONObject().put("taskId", taskId).put("state", if (resultUrl.isBlank()) "PROCESSING" else "SERVER_READY").put("serverId", videoId).put("resultUrl", resultUrl).put("progress", if (isCompleted) 100 else progress).put("startedAt", startedAt))
         updateNotification("Рендеринг видео · опрос $attempt", progress)
-        if (attempt % 10 == 0) AgnesDiagnostics.log(this, taskId, "poll", "attempt=$attempt status=$status url=${resultUrl.isNotBlank()}")
+        AgnesDiagnostics.log(this, taskId, "poll", "attempt=$attempt status=$status candidate_url=${candidateUrl.isNotBlank()} completed=$isCompleted")
       }
       if (resultUrl.isBlank()) throw IllegalStateException("Истекло время ожидания готового видео")
       complete(taskId, resultUrl, kind, startedAt)
