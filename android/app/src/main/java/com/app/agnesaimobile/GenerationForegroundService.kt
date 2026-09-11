@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.IOException
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -33,7 +34,7 @@ class GenerationForegroundService : Service() {
     const val EXTRA_TASK_ID = "taskId"
     const val EXTRA_KIND = "kind"
     const val EXTRA_API_KEY = "apiKey"
-    const val EXTRA_PAYLOAD = "payloadJson"
+    const val EXTRA_PAYLOAD_PATH = "payloadPath"
     const val EXTRA_POLL_INTERVAL = "pollIntervalSec"
     private const val CHANNEL_ID = "agnes_generation_service"
     private const val NOTIFICATION_ID = 4760
@@ -65,10 +66,10 @@ class GenerationForegroundService : Service() {
     val taskId = intent.getStringExtra(EXTRA_TASK_ID).orEmpty()
     val kind = intent.getStringExtra(EXTRA_KIND).orEmpty()
     val apiKey = intent.getStringExtra(EXTRA_API_KEY).orEmpty()
-    val payload = intent.getStringExtra(EXTRA_PAYLOAD).orEmpty()
+    val payloadPath = intent.getStringExtra(EXTRA_PAYLOAD_PATH).orEmpty()
     val pollInterval = intent.getIntExtra(EXTRA_POLL_INTERVAL, 15).coerceIn(5, 120)
-    if (taskId.isBlank() || apiKey.isBlank() || payload.isBlank()) {
-      AgnesDiagnostics.log(this, taskId, "start_rejected", "missing task/api/payload")
+    if (taskId.isBlank() || apiKey.isBlank() || payloadPath.isBlank()) {
+      AgnesDiagnostics.log(this, taskId, "start_rejected", "missing task/api/payload_path")
       return START_NOT_STICKY
     }
 
@@ -83,14 +84,18 @@ class GenerationForegroundService : Service() {
 
     jobs[taskId]?.cancel()
     jobs[taskId] = scope.launch {
-      runTask(taskId, kind, apiKey, payload, pollInterval)
+      runTask(taskId, kind, apiKey, payloadPath, pollInterval)
     }
     return START_NOT_STICKY
   }
 
-  private suspend fun runTask(taskId: String, kind: String, apiKey: String, payload: String, pollInterval: Int) {
+  private suspend fun runTask(taskId: String, kind: String, apiKey: String, payloadPath: String, pollInterval: Int) {
     val startedAt = System.currentTimeMillis()
     try {
+      val payloadFile = File(Uri.parse(payloadPath).path ?: payloadPath)
+      if (!payloadFile.exists()) throw IllegalStateException("Файл параметров задачи не найден")
+      val payload = payloadFile.readText(Charsets.UTF_8)
+      payloadFile.delete()
       save(taskId, JSONObject().put("taskId", taskId).put("state", "SUBMITTING").put("progress", 5).put("startedAt", startedAt))
       updateNotification("Отправка запроса", 10)
       val submitPath = if (kind == "image") "/v1/images/generations" else "/v1/videos"
@@ -131,6 +136,7 @@ class GenerationForegroundService : Service() {
     } catch (_: CancellationException) {
       AgnesDiagnostics.log(this, taskId, "cancelled")
     } catch (error: Exception) {
+      File(Uri.parse(payloadPath).path ?: payloadPath).delete()
       AgnesDiagnostics.log(this, taskId, "task_failed", error.message ?: error.javaClass.simpleName)
       save(taskId, JSONObject().put("taskId", taskId).put("state", "FAILED").put("errorMessage", error.message ?: "Ошибка foreground service").put("startedAt", startedAt))
       updateNotification("Ошибка генерации", 0)
