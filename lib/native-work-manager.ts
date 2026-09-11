@@ -10,6 +10,7 @@ export type NativeWorkStatus = {
   resultUrl?: string;
   localUri?: string;
   errorMessage?: string;
+  errorCode?: number;
 };
 
 type AgnesNativeModule = {

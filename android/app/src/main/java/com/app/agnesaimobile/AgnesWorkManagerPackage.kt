@@ -87,6 +87,7 @@ class AgnesWorkManagerModule(private val reactContext: ReactApplicationContext) 
       result.putString("serverId", json.optString("serverId").takeIf { it.isNotBlank() })
       result.putString("resultUrl", json.optString("resultUrl").takeIf { it.isNotBlank() })
       result.putString("errorMessage", json.optString("errorMessage").takeIf { it.isNotBlank() })
+      if (json.has("errorCode")) result.putInt("errorCode", json.optInt("errorCode"))
       promise.resolve(result)
     } catch (error: Exception) { promise.reject("STATUS_FAILED", error) }
   }

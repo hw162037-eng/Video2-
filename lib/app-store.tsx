@@ -141,7 +141,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
               return;
             }
             if (nativeState.state === "CANCELLED") throw new AgnesApiError("Задача отменена пользователем.", { retryable: false });
-            throw new AgnesApiError(nativeState.errorMessage || "Foreground Service завершил задачу без результата.", { retryable: false });
+            throw new AgnesApiError(nativeState.errorMessage || "Foreground Service завершил задачу без результата.", { code: nativeState.errorCode, retryable: false });
           }
 
           const submitted = task.kind === "image"

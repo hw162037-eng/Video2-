@@ -40,6 +40,7 @@ class GenerationForegroundService : Service() {
     private const val NOTIFICATION_ID = 4760
     const val PREFS = "agnes_service_tasks"
     private const val MAX_RUNTIME_MS = 2 * 60 * 60 * 1000L
+    private const val MAX_POLL_BACKOFF_MS = 5 * 60 * 1000L
   }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -115,12 +116,32 @@ class GenerationForegroundService : Service() {
       save(taskId, JSONObject().put("taskId", taskId).put("state", "PROCESSING").put("serverId", videoId).put("progress", 20).put("startedAt", startedAt))
       var resultUrl = ""
       var attempt = 0
+      var pollRateLimits = 0
       while (resultUrl.isBlank() && attempt < 240) {
         if (System.currentTimeMillis() - startedAt > MAX_RUNTIME_MS) throw IllegalStateException("Превышено максимальное время выполнения задачи")
-        delay(pollInterval * 1000L)
+        val waitMs = if (pollRateLimits == 0) pollInterval * 1000L else minOf(MAX_POLL_BACKOFF_MS, pollInterval * 1000L * (1L shl minOf(pollRateLimits, 5)))
+        delay(waitMs)
         attempt += 1
         val pollUrl = "https://apihub.agnes-ai.com/agnesapi?video_id=${Uri.encode(videoId)}" + if (model.isNotBlank()) "&model_name=${Uri.encode(model)}" else ""
-        val poll = requestJson(pollUrl, apiKey, null)
+        val poll = try {
+          requestJson(pollUrl, apiKey, null)
+        } catch (error: ApiHttpException) {
+          if (error.status == 429 || error.status in 500..599) {
+            pollRateLimits = minOf(5, pollRateLimits + 1)
+            val retryIn = minOf(MAX_POLL_BACKOFF_MS, pollInterval * 1000L * (1L shl pollRateLimits))
+            save(taskId, JSONObject().put("taskId", taskId).put("state", "PROCESSING").put("serverId", videoId).put("progress", minOf(95, 20 + attempt * 75 / 240)).put("startedAt", startedAt).put("pollRetryInMs", retryIn).put("pollErrorCode", error.status))
+            AgnesDiagnostics.log(this, taskId, "poll_rate_limited", "status=${error.status} retry_in_ms=$retryIn attempt=$attempt")
+            continue
+          }
+          throw error
+        } catch (error: IOException) {
+          pollRateLimits = minOf(5, pollRateLimits + 1)
+          val retryIn = minOf(MAX_POLL_BACKOFF_MS, pollInterval * 1000L * (1L shl pollRateLimits))
+          save(taskId, JSONObject().put("taskId", taskId).put("state", "PROCESSING").put("serverId", videoId).put("progress", minOf(95, 20 + attempt * 75 / 240)).put("startedAt", startedAt).put("pollRetryInMs", retryIn))
+          AgnesDiagnostics.log(this, taskId, "poll_network_retry", "retry_in_ms=$retryIn attempt=$attempt")
+          continue
+        }
+        pollRateLimits = 0
         val status = poll.optString("status", "processing").lowercase()
         val candidateUrl = poll.optJSONObject("metadata")?.optString("url").orEmpty().ifBlank { poll.optString("url") }.ifBlank { poll.optString("video_url") }
         if (status == "failed" || status == "error") throw IllegalStateException(poll.optString("error", "Сервер сообщил об ошибке видео"))
@@ -138,7 +159,7 @@ class GenerationForegroundService : Service() {
     } catch (error: Exception) {
       File(Uri.parse(payloadPath).path ?: payloadPath).delete()
       AgnesDiagnostics.log(this, taskId, "task_failed", error.message ?: error.javaClass.simpleName)
-      save(taskId, JSONObject().put("taskId", taskId).put("state", "FAILED").put("errorMessage", error.message ?: "Ошибка foreground service").put("startedAt", startedAt))
+      save(taskId, JSONObject().put("taskId", taskId).put("state", "FAILED").put("errorCode", (error as? ApiHttpException)?.status ?: 0).put("errorMessage", error.message ?: "Ошибка foreground service").put("startedAt", startedAt))
       updateNotification("Ошибка генерации", 0)
     } finally {
       jobs.remove(taskId)
@@ -168,10 +189,12 @@ class GenerationForegroundService : Service() {
       val status = connection.responseCode
       val stream = if (status in 200..299) connection.inputStream else connection.errorStream
       val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-      if (status !in 200..299) throw IOException("Agnes API HTTP $status: ${text.take(500)}")
+      if (status !in 200..299) throw ApiHttpException(status, "Agnes API HTTP $status: ${text.take(500)}")
       return JSONObject(text)
     } finally { connection.disconnect() }
   }
+
+  class ApiHttpException(val status: Int, message: String) : IOException(message)
 
   private fun save(taskId: String, value: JSONObject) {
     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(taskId, value.toString()).apply()
