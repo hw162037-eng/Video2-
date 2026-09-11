@@ -60,7 +60,7 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     loadPersistedState().then((loaded) => {
       loaded.tasks = loaded.tasks.map((task) => ["preparing", "submitting", "processing", "retry_wait"].includes(task.status)
-        ? { ...task, status: "queued", stage: "Восстановлено после перезапуска", progress: Math.min(task.progress, 40), updatedAt: Date.now() }
+        ? { ...task, status: "processing", stage: "Восстановление фоновой генерации", progress: Math.max(5, Math.min(task.progress, 95)), updatedAt: Date.now() }
         : task);
       setState(loaded);
       setHydrated(true);
@@ -71,6 +71,51 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
     if (!hydrated) return;
     persistState(state).catch(() => undefined);
   }, [state, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !hasNativeForegroundService()) return;
+    let stopped = false;
+    const syncNativeResults = async () => {
+      const candidates = state.tasks.filter((task) =>
+        ["preparing", "submitting", "processing", "retry_wait", "failed"].includes(task.status),
+      );
+      for (const task of candidates) {
+        if (stopped) return;
+        try {
+          const nativeState = await getNativeGenerationStatus(task.id);
+          if (nativeState.state === "NOT_FOUND") continue;
+          if (["SUBMITTING", "RETRY_WAIT", "RATE_LIMITED", "PROCESSING"].includes(nativeState.state)) {
+            updateTaskInternal(task.id, {
+              status: "processing",
+              stage: nativeState.state === "RATE_LIMITED" ? "Ожидание лимита Agnes API" : nativeState.state === "RETRY_WAIT" ? "Ожидание повтора сетевого запроса" : "Восстановление фоновой генерации",
+              progress: nativeState.progress || Math.max(5, task.progress),
+              serverId: nativeState.serverId,
+              resultUrl: nativeState.resultUrl,
+              errorCode: nativeState.errorCode,
+              errorMessage: nativeState.errorMessage,
+            });
+            continue;
+          }
+          if (nativeState.state !== "SERVER_READY" || !nativeState.resultUrl) continue;
+          const completedAt = Date.now();
+          const effectiveStartedAt = nativeState.startedAt || task.startedAt || task.createdAt;
+          const generationDuration = Math.max(0, completedAt - effectiveStartedAt);
+          updateTaskInternal(task.id, { status: "completed", stage: "Видео готово на сервере", progress: 100, serverId: nativeState.serverId, resultUrl: nativeState.resultUrl, completedAt, durationMs: generationDuration, errorCode: undefined, errorMessage: undefined });
+          recordHistory(task, nativeState.resultUrl, completedAt, generationDuration);
+          let localUri: string | undefined;
+          try { localUri = await saveResultLocally(nativeState.resultUrl, task); } catch { localUri = undefined; }
+          updateTaskInternal(task.id, { localUri, stage: localUri ? `${task.kind === "video" ? "Видео" : "Изображение"} сохранено на устройстве` : `${task.kind === "video" ? "Видео" : "Изображение"} готово на сервере` });
+          if (localUri) recordHistory(task, nativeState.resultUrl, completedAt, generationDuration, localUri);
+          if (state.settings.notifications) await notifyGenerationCompleted({ id: task.id, kind: task.kind, localUri, resultUrl: nativeState.resultUrl });
+        } catch {
+          // Native polling остаётся источником истины; временный сбой синхронизации не меняет статус задачи.
+        }
+      }
+    };
+    void syncNativeResults();
+    const timer = setInterval(() => { void syncNativeResults(); }, 5000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [hydrated, state.tasks, state.settings.notifications]);
 
   const updateTaskInternal = (id: string, patch: Partial<GenerationTask>) => {
     setState((current) => ({
@@ -121,6 +166,10 @@ export function AppStoreProvider({ children }: PropsWithChildren) {
             await startNativeGeneration(task.id, task.kind, profile.agnesKey, profile.id, payload, state.settings.pollIntervalSec);
             updateTaskInternal(task.id, { status: "processing", stage: "Foreground Service выполняет задачу", progress: 35 });
             let nativeState = await getNativeGenerationStatus(task.id);
+            for (let startupCheck = 0; nativeState.state === "NOT_FOUND" && startupCheck < 10; startupCheck += 1) {
+              await wait(1000);
+              nativeState = await getNativeGenerationStatus(task.id);
+            }
             while (["SUBMITTING", "RETRY_WAIT", "RATE_LIMITED", "PROCESSING"].includes(nativeState.state)) {
               await wait(3000);
               nativeState = await getNativeGenerationStatus(task.id);
