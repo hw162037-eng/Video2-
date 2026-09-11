@@ -92,7 +92,7 @@ async function agnesRequest(path: string, apiKey: string, body: unknown) {
 
 export type SubmitResult = { serverId: string; resultUrl?: string; payloadSummary: string };
 
-/** Prepare every mode's file data before handing the request to WorkManager. */
+/** Prepare every mode's file data before handing the request to the native generation service. */
 export async function buildNativePayload(task: GenerationTask, imgbbKey: string) {
   if (task.kind === "image") {
     const sourceAssets = task.mode === "face_swap"

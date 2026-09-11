@@ -28,7 +28,7 @@ const schemeFromBundleId = `manus${timestamp}`;
 
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "Agnes AI Studio Mobile",
+  appName: "AI Media Studio",
   appSlug: "agnes-ai-mobile",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
@@ -43,7 +43,7 @@ const config: ExpoConfig = {
   slug: env.appSlug,
   version: "1.0.0",
   orientation: "portrait",
-  icon: "./assets/images/icon.png",
+  icon: "./assets/images/ai-media-icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
   // Keep Expo SDK 54's default architecture; the custom package remains manually registered.
@@ -58,7 +58,7 @@ const config: ExpoConfig = {
   android: {
     adaptiveIcon: {
       backgroundColor: "#E6F4FE",
-      foregroundImage: "./assets/images/android-icon-foreground.png",
+      foregroundImage: "./assets/images/ai-media-icon.png",
       backgroundImage: "./assets/images/android-icon-background.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",
     },
@@ -105,8 +105,8 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image: "./assets/images/splash-icon.png",
-        imageWidth: 200,
+        image: "./assets/images/ai-media-splash.png",
+        imageWidth: 320,
         resizeMode: "contain",
         backgroundColor: "#ffffff",
         dark: {
