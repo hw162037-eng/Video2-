@@ -63,11 +63,25 @@ export type GenerationTask = {
   faceImage?: FileAsset;
 };
 
+export type HistoryItem = {
+  id: string;
+  taskId: string;
+  kind: GenerationKind;
+  model: string;
+  prompt: string;
+  resultUrl: string;
+  localUri?: string;
+  createdAt: number;
+  completedAt: number;
+  durationMs?: number;
+};
+
 export type PersistedState = {
   profiles: ApiProfile[];
   sharedImgbbKey: string;
   settings: AppSettings;
   tasks: GenerationTask[];
+  history: HistoryItem[];
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {

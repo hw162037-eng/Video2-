@@ -1,0 +1,23 @@
+import { MaterialIcons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import { useMemo } from "react";
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+
+import { ScreenContainer } from "@/components/screen-container";
+import { useAppStore } from "@/lib/app-store";
+import { formatTaskDate } from "@/lib/types";
+import { formatTaskDuration } from "@/lib/task-time";
+
+const blue = "#45A8FF";
+
+export default function HistoryScreen() {
+  const { history, clearHistory } = useAppStore();
+  const items = useMemo(() => history ?? [], [history]);
+  const copyLink = async (url: string) => { await Clipboard.setStringAsync(url); Alert.alert("Ссылка скопирована", "Серверная ссылка помещена в буфер обмена."); };
+  const confirmClear = () => Alert.alert("Очистить историю?", "Задачи останутся во вкладке «Задачи», будут удалены только записи истории и серверные ссылки.", [{ text: "Отмена", style: "cancel" }, { text: "Очистить", style: "destructive", onPress: clearHistory }]);
+  return <ScreenContainer><View style={styles.header}><Text style={styles.eyebrow}>АРХИВ РЕЗУЛЬТАТОВ</Text><View style={styles.titleRow}><Text style={styles.title}>История</Text>{items.length ? <Pressable onPress={confirmClear} style={styles.clearButton}><MaterialIcons name="delete-outline" size={16} color="#FF9AA0" /><Text style={styles.clearText}>Очистить</Text></Pressable> : null}</View><Text style={styles.subtitle}>Готовые результаты и ссылки на сервере Agnes AI</Text></View><FlatList data={items} keyExtractor={(item) => item.id} contentContainerStyle={styles.list} ListEmptyComponent={<View style={styles.empty}><MaterialIcons name="history" size={42} color="#4F6B80" /><Text style={styles.emptyTitle}>История пока пуста</Text><Text style={styles.emptyText}>После успешной генерации здесь появятся серверная ссылка и параметры результата.</Text></View>} renderItem={({ item }) => <View style={styles.card}><View style={styles.cardTop}><View style={styles.icon}><MaterialIcons name={item.kind === "video" ? "movie" : "image"} size={20} color={blue} /></View><View style={styles.copy}><Text style={styles.cardTitle}>{item.kind === "video" ? "Видео" : "Изображение"} · {item.model}</Text><Text style={styles.meta}>{formatTaskDate(item.completedAt)} · генерация {formatTaskDuration(item.durationMs)}</Text></View></View><Text numberOfLines={3} style={styles.prompt}>{item.prompt || "Без текстового промпта"}</Text><Text numberOfLines={2} selectable style={styles.url}>{item.resultUrl}</Text><View style={styles.actions}><Pressable onPress={() => void copyLink(item.resultUrl)} style={styles.action}><MaterialIcons name="content-copy" size={16} color="#A9D9FF" /><Text style={styles.actionText}>Скопировать ссылку</Text></Pressable>{item.localUri ? <Text style={styles.saved}>сохранено на устройстве</Text> : null}</View></View>} /></ScreenContainer>;
+}
+
+const styles = StyleSheet.create({
+  header: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6 }, eyebrow: { color: blue, fontSize: 11, fontWeight: "800", letterSpacing: 1.5 }, titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 5 }, title: { color: "#F3F8FC", fontSize: 29, fontWeight: "800" }, subtitle: { color: "#8FA5B9", fontSize: 12, marginTop: 7 }, clearButton: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderColor: "#63303B", backgroundColor: "#321D28", borderRadius: 10, paddingHorizontal: 9, paddingVertical: 7 }, clearText: { color: "#FF9AA0", fontSize: 10, fontWeight: "800" }, list: { padding: 16, paddingTop: 8, paddingBottom: 28 }, card: { backgroundColor: "#10202E", borderRadius: 16, borderWidth: 1, borderColor: "#20384B", padding: 14, marginBottom: 12 }, cardTop: { flexDirection: "row", alignItems: "center" }, icon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#153A59", alignItems: "center", justifyContent: "center", marginRight: 10 }, copy: { flex: 1 }, cardTitle: { color: "#DCEAF3", fontSize: 13, fontWeight: "800" }, meta: { color: "#71899D", fontSize: 10, marginTop: 4 }, prompt: { color: "#AFC2CF", fontSize: 12, lineHeight: 17, marginTop: 11 }, url: { color: "#6FB9F0", fontSize: 10, lineHeight: 15, marginTop: 10 }, actions: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12 }, action: { flexDirection: "row", alignItems: "center", gap: 6 }, actionText: { color: "#A9D9FF", fontSize: 11, fontWeight: "800" }, saved: { color: "#6FCDA6", fontSize: 10 }, empty: { alignItems: "center", padding: 40, paddingTop: 80 }, emptyTitle: { color: "#DCEAF3", fontSize: 17, fontWeight: "800", marginTop: 12 }, emptyText: { color: "#72899D", fontSize: 12, lineHeight: 18, textAlign: "center", marginTop: 8 },
+});

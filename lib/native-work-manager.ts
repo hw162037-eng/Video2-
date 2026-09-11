@@ -4,6 +4,7 @@ import * as FileSystem from "expo-file-system/legacy";
 export type NativeWorkStatus = {
   state: "SUBMITTING" | "PROCESSING" | "SERVER_READY" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "NOT_FOUND";
   runAttemptCount: number;
+  startedAt?: number;
   progress?: number;
   serverId?: string;
   resultUrl?: string;

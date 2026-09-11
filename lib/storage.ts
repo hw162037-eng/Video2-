@@ -11,6 +11,7 @@ const fallbackState: PersistedState = {
   sharedImgbbKey: "",
   settings: DEFAULT_SETTINGS,
   tasks: [],
+  history: [],
 };
 
 async function readSecret(key: string) {
@@ -55,6 +56,7 @@ export async function loadPersistedState(): Promise<PersistedState> {
       sharedImgbbKey,
       settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
       tasks: parsed.tasks ?? [],
+      history: parsed.history ?? [],
     };
   } catch {
     return fallbackState;

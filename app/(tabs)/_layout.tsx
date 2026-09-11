@@ -18,6 +18,7 @@ export default function TabLayout() {
   return <Tabs screenOptions={{ headerShown: false, tabBarButton: HapticTab, tabBarActiveTintColor: colors.tint, tabBarInactiveTintColor: "#6E8297", tabBarStyle: { paddingTop: 8, paddingBottom: bottomPadding, height: tabBarHeight, backgroundColor: "#0C1823", borderTopColor: "#20384B", borderTopWidth: 1 }, tabBarLabelStyle: { fontSize: 10, fontWeight: "700" } }}>
     <Tabs.Screen name="index" options={{ title: "Создать", tabBarIcon: ({ color, size }) => <MaterialIcons name="bolt" size={size} color={color} /> }} />
     <Tabs.Screen name="tasks" options={{ title: "Задачи", tabBarBadge: activeTaskCount > 0 ? (activeTaskCount > 99 ? "99+" : String(activeTaskCount)) : undefined, tabBarBadgeStyle: { backgroundColor: "#FF7D85", color: "#07111D", fontSize: 9, fontWeight: "900" }, tabBarIcon: ({ color, size }) => <MaterialIcons name="format-list-bulleted" size={size} color={color} /> }} />
+    <Tabs.Screen name="history" options={{ title: "История", tabBarIcon: ({ color, size }) => <MaterialIcons name="history" size={size} color={color} /> }} />
     <Tabs.Screen name="settings" options={{ title: "Настройки", tabBarIcon: ({ color, size }) => <MaterialIcons name="tune" size={size} color={color} /> }} />
   </Tabs>;
 }
